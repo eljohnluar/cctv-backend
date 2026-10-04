@@ -4,6 +4,8 @@ from typing import Optional, Dict, Any, List
 import numpy as np
 from utils.config import settings
 from utils.logger import logger
+from ai_engine.face_recognition.model_loader import ensure_models_present
+
 
 class FaceRecognizer:
     """
@@ -25,6 +27,9 @@ class FaceRecognizer:
                 self.backend_name = "DeepFace"
         except Exception:
             pass
+
+        # Download models if they were not committed to the repo (e.g. Railway).
+        ensure_models_present()
 
         try:
             import cv2

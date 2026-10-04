@@ -3,6 +3,7 @@ from typing import List, Tuple
 import numpy as np
 from utils.config import settings
 from utils.logger import logger
+from ai_engine.face_recognition.model_loader import ensure_models_present
 
 
 FaceBox = Tuple[int, int, int, int]
@@ -20,6 +21,8 @@ class FaceDetector:
         self.cascades = []
         self.yunet = None
         self.backend_name = "unavailable"
+        # Download models if they were not committed to the repo (e.g. Railway).
+        ensure_models_present()
         try:
             import cv2
             model_path = Path(settings.FACE_DETECTION_MODEL_PATH)
