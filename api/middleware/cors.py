@@ -11,6 +11,7 @@ def setup_cors(app: FastAPI):
         "http://localhost:3000",
         "http://localhost:8000",
         "https://smart-cctv-frontend.vercel.app",
+        "https://smartcctvnewapp.vercel.app",
     ]
     extra_origins = settings.CORS_ORIGINS or ""
     for origin in extra_origins.split(","):
