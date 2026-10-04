@@ -4,7 +4,7 @@ import json
 import threading
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 VALID_UNIFORM_COLORS = ("blue", "dark-blue", "light-blue", "white", "red", "dark-red", "light-red", "black")
