@@ -25,7 +25,11 @@ router = APIRouter(prefix="/students", tags=["Students"])
 def _guard_section(section: Optional[str], claims: Optional[dict]) -> None:
     """Reject a section the signed-in teacher does not handle."""
     allowed = resolve_allowed_sections(claims)
-    if allowed and section and section not in allowed:
+    if allowed is None:
+        return
+    if not allowed:
+        raise HTTPException(status_code=403, detail="No sections are assigned to your account yet. Ask an administrator to assign your year levels and sections.")
+    if (section or "") not in allowed:
         raise HTTPException(status_code=403, detail="That section is outside the year levels and sections assigned to your account.")
 
 
@@ -34,7 +38,7 @@ def list_students(section: Optional[str] = None, claims: Optional[dict] = Depend
     """Retrieve enrolled students, limited to the sections the caller handles"""
     students = get_all_students(section=section)
     allowed = resolve_allowed_sections(claims)
-    if allowed:
+    if allowed is not None:
         students = [student for student in students if student.get("section") in allowed]
     return students
 

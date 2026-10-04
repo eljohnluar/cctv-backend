@@ -3,7 +3,7 @@ import time
 from typing import AsyncIterator
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from ai_engine.camera.frame_analyzer import frame_analyzer
@@ -98,6 +98,34 @@ async def stream_camera():
         _mjpeg_frames(),
         media_type="multipart/x-mixed-replace; boundary=frame",
         headers={"Cache-Control": "no-store, no-cache, must-revalidate"},
+    )
+
+
+@router.get("/snapshot")
+def camera_snapshot():
+    """
+    Return the newest camera frame as a single JPEG.
+
+    Face enrollment reads this instead of drawing the MJPEG <img> onto a canvas:
+    a cross-origin stream taints the canvas, and toDataURL() then throws
+    "Tainted canvases may not be exported" instead of producing a sample.
+    """
+    try:
+        import cv2
+    except ImportError as error:
+        raise HTTPException(status_code=503, detail="OpenCV is not installed; the camera snapshot is unavailable.") from error
+
+    frame = camera_stream.get_latest_frame()
+    if frame is None:
+        raise HTTPException(status_code=503, detail="The camera has not produced a frame yet.")
+
+    encoded, buffer = cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 92])
+    if not encoded:
+        raise HTTPException(status_code=500, detail="The camera frame could not be encoded.")
+    return Response(
+        content=buffer.tobytes(),
+        media_type="image/jpeg",
+        headers={"Cache-Control": "no-store"},
     )
 
 

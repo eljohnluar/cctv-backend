@@ -18,6 +18,7 @@ class AttendanceRecord(BaseModel):
     section: Optional[str] = None
     status: str
     check_in_time: Optional[str] = None
+    check_out_time: Optional[str] = None
     confidence: Optional[float] = None
     class_date: str
 
@@ -25,6 +26,7 @@ class AttendanceStats(BaseModel):
     total: int
     present: int
     late: int
+    time_out: int
     rate: float
 
 class TodayAttendanceResponse(BaseModel):

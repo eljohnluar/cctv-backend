@@ -6,10 +6,10 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from database.queries import create_alert_record, get_face_embeddings, mark_attendance
+from database.queries import create_alert_record, get_face_embeddings, mark_attendance, mark_time_out
 from websocket_manager import publish_from_worker
 from utils.logger import logger
-from utils.uniform_policy import determine_checkin_status, get_runtime_controls, get_uniform_policy
+from utils.uniform_policy import get_runtime_controls, get_uniform_policy
 from ai_engine.security.compliance import compliance_checker
 from .recognizer import face_recognizer
 from ai_engine.voice.announcer import voice_announcer
@@ -21,9 +21,6 @@ FaceBox = Tuple[int, int, int, int]
 # A per-session set prevents re-announcing after each detection frame.
 _UNKNOWN_ANNOUNCE_COOLDOWN = 30.0
 
-# Seconds between "check-in closed" reminders once the attendance window times out.
-_CLOSED_ANNOUNCE_COOLDOWN = 300.0
-
 
 class LiveFaceMatcher:
     """Matches detected face crops and confirms attendance across consecutive scans."""
@@ -33,6 +30,7 @@ class LiveFaceMatcher:
         self._embeddings_loaded_at = 0.0
         self._confirmations: Dict[int, int] = defaultdict(int)
         self._marked_today = set()
+        self._time_out_today = set()
         self._marked_date = date.today()
         # More than one MJPEG client can invoke matching concurrently. Guard
         # confirmations and marking so one recognition emits one event only.
@@ -40,12 +38,12 @@ class LiveFaceMatcher:
 
         # Track last time a trespasser announcement fired (global cooldown)
         self._last_unknown_announce: float = 0.0
-        self._last_closed_announce: float = 0.0
 
     def reset_marked(self) -> None:
         """Clear today's confirmed markings and detection counts."""
         with self._state_lock:
             self._marked_today.clear()
+            self._time_out_today.clear()
             self._confirmations.clear()
             self._last_unknown_announce = 0.0
         logger.info("Live face matcher marked attendance cache reset.")
@@ -109,6 +107,7 @@ class LiveFaceMatcher:
         if today != self._marked_date:
             self._marked_date = today
             self._marked_today.clear()
+            self._time_out_today.clear()
             self._confirmations.clear()
 
         enrolled = self._load_embeddings()
@@ -160,15 +159,6 @@ class LiveFaceMatcher:
             self._confirmations.clear()
             return labels
 
-        # --- Attendance window timeout ---
-        if determine_checkin_status() == "closed":
-            self._confirmations.clear()
-            now = time.monotonic()
-            if now - self._last_closed_announce >= _CLOSED_ANNOUNCE_COOLDOWN:
-                self._last_closed_announce = now
-                voice_announcer.announce_checkin_closed()
-            return labels
-
         # --- Attendance confirmation ---
         for student_id in list(self._confirmations):
             if student_id not in seen_students:
@@ -179,9 +169,13 @@ class LiveFaceMatcher:
             if self._confirmations[student_id] >= 2:
                 self._check_uniform_policy(student_id, enrolled, frame, matched_face_boxes.get(student_id))
             # Require 2 consecutive detections before marking to reduce false positives
-            if self._confirmations[student_id] < 2 or student_id in self._marked_today:
+            if self._confirmations[student_id] < 2:
                 continue
             if matched_gesture_requirements.get(student_id, False) and not hand_gesture_detected:
+                continue
+            # Already checked in today: a later sighting records the departure.
+            if student_id in self._marked_today:
+                self._record_time_out(student_id, enrolled)
                 continue
 
             try:
@@ -200,6 +194,10 @@ class LiveFaceMatcher:
                     (item.get("student_code") for item in enrolled if item.get("student_id") == student_id),
                     "",
                 )
+                student_section = next(
+                    (item.get("section") for item in enrolled if item.get("student_id") == student_id),
+                    "",
+                )
 
                 logger.info("Attendance marked for student %s (%s) with status '%s'.", student_name, student_id, status)
 
@@ -211,17 +209,54 @@ class LiveFaceMatcher:
                     "student_id": student_id,
                     "student_name": student_name,
                     "student_code": student_code,
+                    "section": student_section,
                     "status": status,
                     "confidence": matched_confidences.get(student_id),
                     "check_in_time": record.get("check_in_time"),
                     "class_date": record.get("class_date"),
                     "enrollment_photo_url": f"/api/students/{student_id}/enrollment-photo",
-                    "record": record,
+                    "record": {**record, "section": student_section},
                 })
             except Exception as error:
                 logger.warning("Could not mark attendance for student %s: %s", student_id, error)
 
         return labels
+
+    def _record_time_out(self, student_id: int, enrolled: List[Dict]) -> None:
+        """
+        A confirmed sighting after the student is already checked in records
+        their departure. Only a sighting past the configured Time out is stored,
+        so walking past the camera during the day cannot set a wrong sign-out.
+        """
+        if student_id in self._time_out_today:
+            return
+        try:
+            record = mark_time_out(student_id)
+        except Exception as error:
+            logger.warning("Could not record time out for student %s: %s", student_id, error)
+            return
+        if not record:
+            return
+
+        self._time_out_today.add(student_id)
+        student = next((item for item in enrolled if item.get("student_id") == student_id), {})
+        student_name = student.get("student_name") or "Student"
+        logger.info(
+            "Time out recorded for %s (%s) at %s.",
+            student_name, student_id, record.get("check_out_time"),
+        )
+        voice_announcer.announce_time_out(student_name)
+        publish_from_worker({
+            "type": "attendance_time_out",
+            "student_id": student_id,
+            "student_name": student_name,
+            "student_code": student.get("student_code", ""),
+            "section": student.get("section", ""),
+            "status": "time_out",
+            "check_out_time": record.get("check_out_time"),
+            "class_date": record.get("class_date"),
+            "enrollment_photo_url": f"/api/students/{student_id}/enrollment-photo",
+        })
 
     @staticmethod
     def _check_uniform_policy(

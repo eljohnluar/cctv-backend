@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS attendance (
     student_id BIGINT REFERENCES students(id) ON DELETE CASCADE,
     class_date DATE NOT NULL,
     check_in_time TIMESTAMPTZ,
-    status TEXT DEFAULT 'present' CHECK (status IN ('present', 'late')),
+    check_out_time TIMESTAMPTZ,
+    status TEXT DEFAULT 'present' CHECK (status IN ('present', 'late', 'time_out')),
     confidence FLOAT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     UNIQUE(student_id, class_date)

@@ -1,5 +1,6 @@
 import os
 import sys
+from pathlib import Path
 
 from pydantic_settings import BaseSettings
 from pydantic import Field, ValidationError
@@ -19,6 +20,7 @@ class Settings(BaseSettings):
 
     # Deployment
     CORS_ORIGINS: str = Field(default="", env="CORS_ORIGINS")
+    FRONTEND_DIST_PATH: str = Field(default="", env="FRONTEND_DIST_PATH")
 
     # Camera (OBS Virtual Camera)
     CAMERA_INDEX: int = Field(default=1, env="CAMERA_INDEX")
@@ -68,12 +70,21 @@ class Settings(BaseSettings):
     # General
     ENVIRONMENT: str = Field(default="development", env="ENVIRONMENT")
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
-    HOST: str = Field(default="0.0.0.0", env="HOST")
+    HOST: str = Field(default="127.0.0.1", env="HOST")
     PORT: int = Field(default=8000, env="PORT")
 
     class Config:
         env_file = ".env"
         extra = "ignore"
+
+
+def _env_file_path() -> Optional[Path]:
+    """Desktop installs keep config in %ProgramData%\\SmartCCTV\\.env; dev falls back to the repo .env."""
+    progdata = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / "SmartCCTV" / ".env"
+    if progdata.exists():
+        return progdata
+    local = Path(__file__).resolve().parent.parent / ".env"
+    return local if local.exists() else None
 
 
 def _load_settings() -> Settings:
@@ -85,7 +96,7 @@ def _load_settings() -> Settings:
     fall back to defaults for the rest.
     """
     try:
-        return Settings()
+        return Settings(_env_file=_env_file_path())
     except ValidationError as error:
         for issue in error.errors():
             field = (issue.get("loc") or (None,))[0]

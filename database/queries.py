@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from database.supabase_client import get_supabase
 from utils.logger import logger
-from utils.uniform_policy import determine_checkin_status, get_gesture_enrolled_students, get_schedule_settings
+from utils.uniform_policy import determine_checkin_status, get_gesture_enrolled_students, is_past_time_out
 
 
 class DatabaseUnavailableError(RuntimeError):
@@ -37,6 +37,7 @@ def _format_attendance_records(rows: List[Dict[str, Any]]) -> List[Dict[str, Any
             "section": student.get("section"),
             "status": row.get("status"),
             "check_in_time": row.get("check_in_time"),
+            "check_out_time": row.get("check_out_time"),
             "confidence": row.get("confidence"),
             "class_date": row.get("class_date"),
         })
@@ -126,7 +127,7 @@ def get_face_embeddings() -> List[Dict[str, Any]]:
         result = (
             _client()
             .table("face_embeddings")
-            .select("student_id, embedding, students(full_name, student_id)")
+            .select("student_id, embedding, students(full_name, student_id, section)")
             .execute()
         )
         embeddings = []
@@ -138,6 +139,7 @@ def get_face_embeddings() -> List[Dict[str, Any]]:
                     "student_id": row.get("student_id"),
                     "student_name": student.get("full_name", "Unknown"),
                     "student_code": student.get("student_id", ""),
+                    "section": student.get("section", ""),
                     "gesture_enrolled": gesture_enrolled_students.get(str(row.get("student_id")), False),
                     "embedding": vector,
                 })
@@ -200,24 +202,31 @@ def mark_attendance(
     confidence: Optional[float] = None,
     check_in_time: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """Store a check-in and calculate present/late from its timestamp."""
+    """Store a check-in and derive present, late or time out from its timestamp."""
     try:
         checked_in_at = check_in_time or datetime.now().astimezone()
         # Schedules use the backend's local wall-clock time, while stored
         # timestamps are UTC. Normalize first so the correct local date and
         # status are derived even when callers submit an ISO UTC timestamp.
         checked_in_at = checked_in_at.astimezone()
+        class_date = checked_in_at.date().isoformat()
+        existing = (
+            _client()
+            .table("attendance")
+            .select("*")
+            .eq("student_id", student_id)
+            .eq("class_date", class_date)
+            .limit(1)
+            .execute()
+        )
+        if existing.data and existing.data[0].get("check_in_time"):
+            # The first check-in wins, so recognising the same student again
+            # cannot move their arrival time or downgrade a recorded time out.
+            return existing.data[0]
         status = determine_checkin_status(checked_in_at)
-        if status == "closed":
-            schedule = get_schedule_settings()
-            raise ValueError(
-                "Attendance check-in has timed out. The window closes "
-                f"{schedule['attendance_timeout_minutes']} minutes after "
-                f"{schedule['checkin_time']}."
-            )
         data = {
             "student_id": student_id,
-            "class_date": checked_in_at.date().isoformat(),
+            "class_date": class_date,
             "check_in_time": checked_in_at.astimezone(timezone.utc).isoformat(),
             "status": status,
             "confidence": confidence,
@@ -228,10 +237,39 @@ def mark_attendance(
         return result.data[0]
     except DatabaseUnavailableError:
         raise
-    except ValueError:
-        raise
     except Exception as error:
         raise _database_error("attendance update", error) from error
+
+
+def mark_time_out(student_id: int, check_out_time: Optional[datetime] = None) -> Optional[Dict[str, Any]]:
+    """
+    Record the departure stamp on today's attendance row.
+
+    Only a departure later than the configured Time out is stored, so a student
+    passing the camera during the day cannot overwrite their real sign-out. The
+    row must already exist from a check-in, and the first sign-out wins.
+    """
+    checked_out_at = (check_out_time or datetime.now().astimezone()).astimezone()
+    if not is_past_time_out(checked_out_at):
+        return None
+    try:
+        result = (
+            _client()
+            .table("attendance")
+            .update({
+                "check_out_time": checked_out_at.astimezone(timezone.utc).isoformat(),
+                "status": "time_out",
+            })
+            .eq("student_id", student_id)
+            .eq("class_date", checked_out_at.date().isoformat())
+            .is_("check_out_time", None)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("attendance time out update", error) from error
 
 
 def reset_attendance_for_date(target_date: Optional[str] = None) -> int:

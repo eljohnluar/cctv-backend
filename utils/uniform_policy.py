@@ -186,19 +186,8 @@ def save_schedule_settings(
     }
 
 
-def determine_checkin_status(checkin_dt: Any = None) -> str:
-    """
-    Determine attendance status based on set check-in time:
-    - Before the grace cutoff: 'present'
-    - After the grace cutoff but inside the attendance window: 'late'
-    - After the attendance window times out: 'closed' (no check-in accepted)
-    """
-    schedule = get_schedule_settings()
-    checkin_time_str = schedule.get("checkin_time", "08:00")
-    grace_minutes = int(schedule.get("late_grace_minutes", 30))
-    timeout_minutes = int(schedule.get("attendance_timeout_minutes", 120))
-
-    now = checkin_dt or datetime.now()
+def _as_local_datetime(value: Any) -> datetime:
+    now = value or datetime.now()
     if isinstance(now, str):
         try:
             now = datetime.fromisoformat(now.replace("Z", "+00:00"))
@@ -209,6 +198,44 @@ def determine_checkin_status(checkin_dt: Any = None) -> str:
         # received in UTC (for example, from a manual API request) before
         # comparing their clock time to the schedule.
         now = now.astimezone()
+    return now
+
+
+def _time_out_cutoff(now: datetime) -> Optional[datetime]:
+    """The clock the schedule labels 'Time out': check-in start plus the timeout."""
+    schedule = get_schedule_settings()
+    try:
+        hour, minute = map(int, schedule.get("checkin_time", "08:00").split(":"))
+        return now.replace(
+            hour=hour,
+            minute=minute,
+            second=0,
+            microsecond=0,
+        ) + timedelta(minutes=int(schedule.get("attendance_timeout_minutes", 120)))
+    except Exception:
+        return None
+
+
+def is_past_time_out(at: Any = None) -> bool:
+    """True when the given moment is later than the configured Time out."""
+    now = _as_local_datetime(at)
+    cutoff = _time_out_cutoff(now)
+    return bool(cutoff) and now > cutoff
+
+
+def determine_checkin_status(checkin_dt: Any = None) -> str:
+    """
+    Determine attendance status based on set check-in time:
+    - Before the grace cutoff: 'present'
+    - After the grace cutoff but inside the attendance window: 'late'
+    - After the Time out: 'time_out'
+    """
+    schedule = get_schedule_settings()
+    checkin_time_str = schedule.get("checkin_time", "08:00")
+    grace_minutes = int(schedule.get("late_grace_minutes", 30))
+    timeout_minutes = int(schedule.get("attendance_timeout_minutes", 120))
+
+    now = _as_local_datetime(checkin_dt)
 
     try:
         hour, minute = map(int, checkin_time_str.split(":"))
@@ -216,7 +243,7 @@ def determine_checkin_status(checkin_dt: Any = None) -> str:
         late_cutoff = target + timedelta(minutes=grace_minutes)
         attendance_cutoff = target + timedelta(minutes=timeout_minutes)
         if now > attendance_cutoff:
-            return "closed"
+            return "time_out"
         if now > late_cutoff:
             return "late"
         return "present"

@@ -1,9 +1,10 @@
 import asyncio
 import json
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import List
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, JSONResponse
 
 from utils.config import settings
 from utils.logger import logger
@@ -14,6 +15,8 @@ from ai_engine.camera.rtsp_client import camera_stream
 from ai_engine.face_recognition.recognizer import face_recognizer
 from database.queries import get_all_students, get_alerts_list
 from database.queries import DatabaseUnavailableError
+from utils.sections import resolve_allowed_sections
+from utils.tokens import decode_token
 from websocket_manager import manager, set_event_loop
 
 @asynccontextmanager
@@ -73,7 +76,10 @@ def get_system_status():
 # WebSocket Endpoint for real-time live events
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    await manager.connect(websocket)
+    # Teachers pass their session token so check-in events stay inside their
+    # assigned sections; other clients (camera kiosk) receive everything.
+    claims = decode_token(websocket.query_params.get("token"))
+    await manager.connect(websocket, resolve_allowed_sections(claims))
     try:
         # Send initial greeting
         await websocket.send_text(json.dumps({
@@ -96,16 +102,28 @@ async def websocket_endpoint(websocket: WebSocket):
 def health():
     return {"status": "ok", "service": "SmartCCTV AI Backend"}
 
-# Root status
-@app.get("/")
-def root():
-    return {
-        "service": "SmartCCTV AI Backend",
-        "version": "1.0.0",
-        "docs": "/docs",
-        "status": "operational"
-    }
+
+def _frontend_dist() -> Path:
+    dist = Path(settings.FRONTEND_DIST_PATH or "frontend/dist")
+    if not dist.is_absolute():
+        dist = Path(__file__).resolve().parent.parent / dist
+    return dist
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def serve_frontend(full_path: str):
+    """Serve the built frontend; client-side routes fall back to index.html."""
+    if full_path.startswith(("api/", "ws", "docs", "openapi.json", "redoc")):
+        raise HTTPException(status_code=404)
+    dist = _frontend_dist()
+    candidate = (dist / full_path).resolve()
+    if candidate.is_file() and candidate.is_relative_to(dist.resolve()):
+        return FileResponse(candidate)
+    index = dist / "index.html"
+    if index.is_file():
+        return FileResponse(index)
+    raise HTTPException(status_code=404, detail="Frontend build not found; run `npm run build` in frontend/")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=True)
+    uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=False)

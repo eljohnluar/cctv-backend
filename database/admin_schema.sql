@@ -86,7 +86,8 @@ ON CONFLICT (username) DO NOTHING;
 
 -- ── 5. Teacher section scope (college year levels) ───────────────────────────
 -- A teacher handles a set of year levels crossed with a set of section letters.
--- Empty arrays mean the teacher is unrestricted.
+-- Empty arrays scope the teacher to nothing, so an account sees no rosters until
+-- an administrator assigns at least one year level and one section letter.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS year_levels JSONB NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS sections JSONB NOT NULL DEFAULT '[]'::jsonb;
 

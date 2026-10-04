@@ -69,9 +69,12 @@ class VoiceAnnouncer:
             self._last_trespasser_at = now
         self.announce("Trespasser.")
 
-    def announce_checkin_closed(self) -> None:
-        """Announce that today's attendance window has timed out."""
-        self.announce("Attendance check-in is closed.")
+    def announce_time_out(self, student_name: str) -> None:
+        """
+        Announce a departure recorded after the Time out.
+        Example: "Maria Santos, time out recorded."
+        """
+        self.announce(f"{student_name}, time out recorded.")
 
     def announce_security_alert(self, alert_description: str) -> None:
         """Announce a general security alert."""

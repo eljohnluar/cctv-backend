@@ -116,6 +116,7 @@ def admin_summary(_: AdminClaims):
             "total": len(today_records),
             "present": len([record for record in today_records if record.get("status") == "present"]),
             "late": len([record for record in today_records if record.get("status") == "late"]),
+            "time_out": len([record for record in today_records if record.get("status") == "time_out"]),
         },
         "unresolved_alert_count": len(unresolved),
         "sections": sections,

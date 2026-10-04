@@ -93,12 +93,12 @@ def _account_assignments(username: str) -> Dict[str, List[str]]:
 def resolve_allowed_sections(claims: Optional[dict]) -> Optional[List[str]]:
     """Sections the caller may work with, or None when they are unrestricted.
 
-    Administrators and unauthenticated callers get None; a teacher with no
-    assigned years or sections also gets None so nothing silently disappears.
+    Administrators and unauthenticated internal callers (the camera worker) get
+    None. A teacher is always scoped to their assignments, so an account with no
+    year levels or section letters sees nothing instead of every roster.
     """
     if not claims or claims.get("role") != "teacher":
         return None
 
     assignments = _account_assignments(claims.get("sub", ""))
-    allowed = expand_sections(assignments["year_levels"], assignments["letters"])
-    return allowed or None
+    return expand_sections(assignments["year_levels"], assignments["letters"])

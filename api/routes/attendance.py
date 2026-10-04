@@ -25,23 +25,35 @@ router = APIRouter(prefix="/attendance", tags=["Attendance"])
 def _scope_to_account(records: List[dict], students: List[dict], claims: Optional[dict]):
     """Keep only the rows belonging to sections the signed-in teacher handles."""
     allowed = resolve_allowed_sections(claims)
-    if not allowed:
+    if allowed is None:
         return records, students
     return (
         [record for record in records if record.get("section") in allowed],
         [student for student in students if student.get("section") in allowed],
     )
 
+
+def _guard_student_scope(student_id: int, claims: Optional[dict]) -> None:
+    """Reject a manual check-in for a student the signed-in teacher does not handle."""
+    allowed = resolve_allowed_sections(claims)
+    if allowed is None:
+        return
+    student = next((item for item in get_all_students() if item.get("id") == student_id), None)
+    if not student or student.get("section") not in allowed:
+        raise HTTPException(status_code=403, detail="That student is outside the year levels and sections assigned to your account.")
+
 def calculate_stats(records: List[dict], total_enrolled: int) -> AttendanceStats:
     total = len(records)
     present = sum(1 for r in records if r.get("status") == "present")
     late = sum(1 for r in records if r.get("status") == "late")
+    time_out = sum(1 for r in records if r.get("status") == "time_out")
     effective_total = total_enrolled if total_enrolled > 0 else total
-    rate = round(((present + late) / effective_total * 100), 1) if effective_total > 0 else 0.0
+    rate = round(((present + late + time_out) / effective_total * 100), 1) if effective_total > 0 else 0.0
     return AttendanceStats(
         total=effective_total,
         present=present,
         late=late,
+        time_out=time_out,
         rate=rate
     )
 
@@ -69,16 +81,14 @@ def get_attendance_by_date(query_date: str, claims: Optional[dict] = Depends(get
     )
 
 @router.post("/manual")
-def manual_mark(payload: AttendanceManualMark):
+def manual_mark(payload: AttendanceManualMark, claims: Optional[dict] = Depends(get_optional_account)):
     """Record attendance and derive status from the check-in time."""
-    try:
-        record = mark_attendance(
-            student_id=payload.student_id,
-            confidence=payload.confidence,
-            check_in_time=payload.check_in_time,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=409, detail=str(error)) from error
+    _guard_student_scope(payload.student_id, claims)
+    record = mark_attendance(
+        student_id=payload.student_id,
+        confidence=payload.confidence,
+        check_in_time=payload.check_in_time,
+    )
     return {
         "success": True,
         "message": f"Attendance updated for student {payload.student_id}",
