@@ -29,7 +29,7 @@ from utils.demo_accounts import (
     update_fallback,
 )
 from utils.logger import logger
-from utils.sections import normalise_letters, normalise_years
+from utils.sections import normalise_sections, normalise_years
 
 router = APIRouter(prefix="/admin", tags=["Admin"])
 
@@ -43,7 +43,7 @@ class TeacherCreateRequest(BaseModel):
     email: Optional[str] = None
     role: str = Field(default="teacher", description="teacher or admin")
     year_levels: Optional[List[str]] = Field(default_factory=list, description="Year levels handled, e.g. '1st Year'")
-    sections: Optional[List[str]] = Field(default_factory=list, description="Section letters handled, e.g. 'A'")
+    sections: Optional[List[str]] = Field(default_factory=list, description="Section names handled, e.g. 'A' or '11001'")
 
 
 class TeacherUpdateRequest(BaseModel):
@@ -93,8 +93,8 @@ def _assigned_years(values) -> List[str]:
     return normalise_years(values)
 
 
-def _assigned_letters(values) -> List[str]:
-    return normalise_letters(values)
+def _assigned_sections(values) -> List[str]:
+    return normalise_sections(values)
 
 
 @router.get("/summary")
@@ -156,7 +156,7 @@ def create_teacher(payload: TeacherCreateRequest, request: Request, claims: Admi
 
     role = _normalise_role(payload.role)
     year_levels = _assigned_years(payload.year_levels)
-    letters = _assigned_letters(payload.sections)
+    names = _assigned_sections(payload.sections)
     email = (payload.email or f"{username}@smartcctv.edu").strip().lower()
     record = {
         "username": username,
@@ -167,7 +167,7 @@ def create_teacher(payload: TeacherCreateRequest, request: Request, claims: Admi
         "registration_code": settings.ADMIN_REGISTRATION_CODE if role == "admin" else settings.TEACHER_PROVISIONING_CODE,
         "is_active": True,
         "year_levels": year_levels,
-        "sections": letters,
+        "sections": names,
     }
 
     account = None
@@ -222,7 +222,7 @@ def update_teacher(
     if "year_levels" in updates:
         updates["year_levels"] = _assigned_years(updates["year_levels"])
     if "sections" in updates:
-        updates["sections"] = _assigned_letters(updates["sections"])
+        updates["sections"] = _assigned_sections(updates["sections"])
     if "password" in updates:
         updates["password_hash"] = hash_password(updates.pop("password"))
 

@@ -1,7 +1,8 @@
-"""College year levels, lettered sections, and per-teacher section scope.
+"""College year levels, section names, and per-teacher section scope.
 
-A section name is year-scoped (``"1st Year - Section A"``) so the 5 sections that
-exist in each of the 4 years stay distinguishable in reports and filters.
+A section name is year-scoped (``"1st Year - Section A"``) so sections that
+exist in several years stay distinguishable in reports and filters. The section
+part is free text — a letter (A), a number (11001), or any short label.
 """
 
 import re
@@ -13,46 +14,39 @@ from utils.demo_accounts import FALLBACK_USERS
 from utils.logger import logger
 
 YEAR_LEVELS = ["1st Year", "2nd Year", "3rd Year", "4th Year"]
-SECTION_LETTERS = ["A", "B", "C", "D", "E"]
 
 
-def section_label(year_level: str, letter: str) -> str:
-    return f"{year_level} - Section {letter}"
+def section_label(year_level: str, name: str) -> str:
+    return f"{year_level} - Section {name}"
 
 
 def normalise_years(values: Optional[List[str]]) -> List[str]:
     return [value for value in (values or []) if value in YEAR_LEVELS]
 
 
-def _letter_from_token(token: str) -> Optional[str]:
-    text = token.strip().upper()
-    if not text:
-        return None
-    for pattern in (r"^([A-E])\.?$", r"SECTION[\s\-]*([A-E])\b", r"\d[\s\-]*([A-E])$"):
-        match = re.search(pattern, text)
-        if match:
-            return match.group(1)
-    found = {char for char in text if char in SECTION_LETTERS}
-    return found.pop() if len(found) == 1 else None
+_SECTION_PREFIX = re.compile(r"^(?:\w+\s+year\s*[-–]\s*)?section\s*[-–]?\s*", re.IGNORECASE)
 
 
-def normalise_letters(values: Optional[List[str]]) -> List[str]:
+def normalise_sections(values: Optional[List[str]]) -> List[str]:
     cleaned = []
     for value in values or []:
         for token in str(value).split(","):
-            letter = _letter_from_token(token)
-            if letter and letter not in cleaned:
-                cleaned.append(letter)
+            name = token.strip().strip("\"'")
+            name = _SECTION_PREFIX.sub("", name).strip()
+            if len(name) == 1:
+                name = name.upper()
+            if name and name not in cleaned:
+                cleaned.append(name)
     return cleaned
 
 
-def expand_sections(year_levels: Optional[List[str]], letters: Optional[List[str]]) -> List[str]:
-    """Cartesian product of the year levels and section letters a teacher handles."""
+def expand_sections(year_levels: Optional[List[str]], names: Optional[List[str]]) -> List[str]:
+    """Cartesian product of the year levels and section names a teacher handles."""
     years = normalise_years(year_levels)
-    cleaned = normalise_letters(letters)
+    cleaned = normalise_sections(names)
     if not years or not cleaned:
         return []
-    return [section_label(year, letter) for year in years for letter in cleaned]
+    return [section_label(year, name) for year in years for name in cleaned]
 
 
 def year_level_of(section: Optional[str]) -> str:
@@ -72,7 +66,7 @@ def _account_assignments(username: str) -> Dict[str, List[str]]:
     if cached and cached[0] > now:
         return cached[1]
 
-    assignments = {"year_levels": [], "letters": []}
+    assignments = {"year_levels": [], "sections": []}
     client = get_supabase()
     if client:
         try:
@@ -86,7 +80,7 @@ def _account_assignments(username: str) -> Dict[str, List[str]]:
                 row = result.data[0]
                 assignments = {
                     "year_levels": row.get("year_levels") or [],
-                    "letters": row.get("sections") or [],
+                    "sections": row.get("sections") or [],
                 }
         except Exception as error:
             logger.warning("Could not read section scope for '%s': %s", username, error)
@@ -97,7 +91,7 @@ def _account_assignments(username: str) -> Dict[str, List[str]]:
         account = FALLBACK_USERS.get(username) or {}
         assignments = {
             "year_levels": account.get("year_levels") or [],
-            "letters": account.get("sections") or [],
+            "sections": account.get("sections") or [],
         }
 
     _assignment_cache[username] = (now + _ASSIGNMENT_TTL_SECONDS, assignments)
@@ -109,10 +103,10 @@ def resolve_allowed_sections(claims: Optional[dict]) -> Optional[List[str]]:
 
     Administrators and unauthenticated internal callers (the camera worker) get
     None. A teacher is always scoped to their assignments, so an account with no
-    year levels or section letters sees nothing instead of every roster.
+    year levels or sections sees nothing instead of every roster.
     """
     if not claims or claims.get("role") != "teacher":
         return None
 
     assignments = _account_assignments(claims.get("sub", ""))
-    return expand_sections(assignments["year_levels"], assignments["letters"])
+    return expand_sections(assignments["year_levels"], assignments["sections"])
