@@ -9,6 +9,8 @@ from database.queries import (
     update_student_record,
     delete_student_record,
     replace_face_embeddings,
+    reset_all_face_enrollments,
+    reset_student_face_enrollment,
 )
 from ai_engine.face_recognition.detector import face_detector
 from ai_engine.face_recognition.recognizer import face_recognizer
@@ -144,28 +146,13 @@ async def enroll_face(
                     min_size=20,
                     detection_width=960,
                 )
-            if not faces and last_box:
-                # The student is sitting in the same spot across the four
-                # angles, so a trace from an earlier capture is still a valid
-                # place to crop from.
-                faces = [last_box]
-                logger.warning("Enrollment '%s' capture reused the previous face box (no fresh detection).", angle)
-            if not faces and last_box is None:
-                # First capture with nothing detected: crop the center, where
-                # the capture UI instructs the student to look. A traced face
-                # on any later angle will take over from here.
-                frame_height, frame_width = frame.shape[:2]
-                box_width = round(frame_width * 0.45)
-                box_height = round(frame_height * 0.6)
-                faces = [(
-                    max(0, (frame_width - box_width) // 2),
-                    max(0, (frame_height - box_height) // 3),
-                    box_width,
-                    box_height,
-                )]
-                logger.warning(
-                    "Enrollment '%s' capture had no detectable face; cropping the center as a fallback.",
-                    angle,
+            if not faces:
+                raise HTTPException(
+                    status_code=422,
+                    detail=(
+                        f"No face was detected in the {angle} photo. "
+                        "Ensure your face is clearly visible, well-lit, and centred in the frame, then retake the photo."
+                    ),
                 )
 
             x, y, width, height = max(faces, key=lambda box: box[2] * box[3])
@@ -226,3 +213,23 @@ async def enroll_face(
     except Exception as e:
         logger.error(f"Error during face enrollment: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/reset-enrollments")
+def reset_all_student_enrollments(_: dict = Depends(require_password_confirmation)):
+    """Reset all student face enrollments and embeddings."""
+    count = reset_all_face_enrollments()
+    live_face_matcher.refresh_embeddings()
+    live_face_matcher.reset_marked()
+    return {"success": True, "message": f"Reset face enrollment for {count} students", "count": count}
+
+
+@router.delete("/{student_id}/face")
+def reset_single_student_face(student_id: int, _: dict = Depends(require_password_confirmation)):
+    """Reset face enrollment for a single student."""
+    success = reset_student_face_enrollment(student_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Student not found")
+    live_face_matcher.refresh_embeddings()
+    return {"success": True, "message": f"Face enrollment reset for student {student_id}"}
+

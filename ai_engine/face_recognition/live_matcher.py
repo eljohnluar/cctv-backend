@@ -86,10 +86,11 @@ class LiveFaceMatcher:
         boxes: List[FaceBox],
         record_attendance: bool = True,
         hand_gesture_detected: bool = False,
+        yunet_rows: List | None = None,
     ) -> List[str]:
         with self._state_lock:
             return self._match_frame(
-                frame, boxes, record_attendance, hand_gesture_detected
+                frame, boxes, record_attendance, hand_gesture_detected, yunet_rows or []
             )
 
     def _match_frame(
@@ -98,6 +99,7 @@ class LiveFaceMatcher:
         boxes: List[FaceBox],
         record_attendance: bool = True,
         hand_gesture_detected: bool = False,
+        yunet_rows: List | None = None,
     ) -> List[str]:
         """Return labels aligned with boxes and mark confirmed identities present today."""
         if frame is None or not boxes:
@@ -119,20 +121,25 @@ class LiveFaceMatcher:
         matched_face_boxes: Dict[int, FaceBox] = {}
         matched_gesture_requirements: Dict[int, bool] = {}
 
-        for box in boxes:
+        rows = yunet_rows or [None] * len(boxes)
+        for box, yunet_row in zip(boxes, rows):
             crop = self._crop(frame, box)
-            embedding = face_recognizer.extract_embedding(crop) if crop is not None else None
+            embedding = (
+                face_recognizer.extract_embedding(crop, full_frame=frame, yunet_face_row=yunet_row)
+                if crop is not None
+                else None
+            )
 
             if not enrolled:
                 # No enrolled faces in the system
-                labels.append("NOT ENROLLED")
+                labels.append("UNREGISTERED")
                 unknown_detected = True
                 continue
 
             match = face_recognizer.match_face(embedding, enrolled) if embedding else None
 
             if not match:
-                labels.append("UNKNOWN")
+                labels.append("UNREGISTERED")
                 unknown_detected = True
                 continue
 
@@ -162,13 +169,13 @@ class LiveFaceMatcher:
         # --- Attendance confirmation ---
         for student_id in list(self._confirmations):
             if student_id not in seen_students:
-                self._confirmations[student_id] = 0
+                self._confirmations[student_id] = max(0, self._confirmations[student_id] - 1)
 
         for student_id in seen_students:
             self._confirmations[student_id] += 1
             if self._confirmations[student_id] >= 2:
                 self._check_uniform_policy(student_id, enrolled, frame, matched_face_boxes.get(student_id))
-            # Require 2 consecutive detections before marking to reduce false positives
+            # Require 2 consecutive detections (~2 s) before marking to ensure stable match
             if self._confirmations[student_id] < 2:
                 continue
             if matched_gesture_requirements.get(student_id, False) and not hand_gesture_detected:
@@ -215,7 +222,13 @@ class LiveFaceMatcher:
                     "check_in_time": record.get("check_in_time"),
                     "class_date": record.get("class_date"),
                     "enrollment_photo_url": f"/api/students/{student_id}/enrollment-photo",
-                    "record": {**record, "section": student_section},
+                    "record": {
+                        **record,
+                        "student_id": student_id,
+                        "student_name": student_name,
+                        "student_code": student_code,
+                        "section": student_section,
+                    },
                 })
             except Exception as error:
                 logger.warning("Could not mark attendance for student %s: %s", student_id, error)

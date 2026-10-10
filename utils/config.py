@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     THREAT_SCAN_INTERVAL: float = Field(default=1.0, env="THREAT_SCAN_INTERVAL")
 
     # AI & Face Recognition
-    RECOGNITION_THRESHOLD: float = Field(default=0.45, env="RECOGNITION_THRESHOLD")
+    RECOGNITION_THRESHOLD: float = Field(default=0.60, env="RECOGNITION_THRESHOLD")
     RECOGNITION_MODEL: str = Field(default="Facenet", env="RECOGNITION_MODEL")
     FACE_RECOGNITION_MODEL_PATH: str = Field(
         default="ai_engine/models/face_recognition_sface_2021dec.onnx",
@@ -70,8 +70,12 @@ class Settings(BaseSettings):
     # General
     ENVIRONMENT: str = Field(default="development", env="ENVIRONMENT")
     LOG_LEVEL: str = Field(default="INFO", env="LOG_LEVEL")
-    HOST: str = Field(default="127.0.0.1", env="HOST")
+    HOST: str = Field(default="0.0.0.0", env="HOST")
     PORT: int = Field(default=8000, env="PORT")
+    ENABLE_CAMERA_ON_BOOT: bool = Field(
+        default=False if (os.environ.get("RENDER") or os.environ.get("RAILWAY_ENVIRONMENT")) else True,
+        env="ENABLE_CAMERA_ON_BOOT",
+    )
 
     class Config:
         env_file = ".env"

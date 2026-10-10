@@ -2,16 +2,19 @@ import asyncio
 import time
 from typing import AsyncIterator
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 from ai_engine.camera.frame_analyzer import frame_analyzer
 from ai_engine.camera.rtsp_client import camera_stream
 from ai_engine.face_recognition.detector import face_detector
+from ai_engine.face_recognition.live_matcher import live_face_matcher
+from ai_engine.gesture_detection import gesture_detector
 from ai_engine.security.weapon_detection import weapon_detector
 from ai_engine.voice.announcer import voice_announcer
 from utils.config import settings
+from utils.logger import logger
 from utils.uniform_policy import get_runtime_controls
 
 router = APIRouter(prefix="/camera", tags=["camera"])
@@ -132,20 +135,86 @@ def camera_snapshot():
 @router.get("/attendance-recording")
 async def get_attendance_recording():
     return {
-        "ready": camera_stream.is_connected,
+        "ready": True,
         "attendance_recording": camera_stream.attendance_recording,
     }
 
 
 @router.post("/attendance-recording")
 async def set_attendance_recording(payload: AttendanceRecordingRequest):
-    if payload.enabled and not camera_stream.is_connected:
-        raise HTTPException(status_code=409, detail="The camera is not ready. Please ensure the camera source is active.")
     camera_stream.attendance_recording = payload.enabled
     return {
-        "ready": camera_stream.is_connected,
+        "ready": True,
         "attendance_recording": camera_stream.attendance_recording,
     }
+
+
+@router.post("/process-frame")
+@router.post("/process-frame/")
+async def process_device_frame(file: UploadFile = File(...)):
+    """
+    Ingest and analyze a camera frame sent directly from the frontend device camera.
+    Runs face detection, open-palm gesture verification, and biometric face recognition.
+    Matches against enrolled Supabase student embeddings and records attendance.
+    """
+    try:
+        import cv2
+        import numpy as np
+
+        content = await file.read()
+        frame = cv2.imdecode(np.frombuffer(content, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
+            raise HTTPException(status_code=400, detail="Could not decode frame image.")
+
+        # Detect open-palm hand gesture if gesture attendance is enabled
+        hand_status = gesture_detector.detect_hand(frame)
+        gesture_detected = bool(hand_status.get("open_palm", False))
+
+        # Detect faces using YuNet
+        faces, yunet_rows = face_detector.detect_faces_with_landmarks(frame)
+
+        # Biometric matching against enrolled Supabase embeddings
+        labels = []
+        if faces:
+            labels = live_face_matcher.match_frame(
+                frame,
+                faces,
+                record_attendance=camera_stream.attendance_recording,
+                hand_gesture_detected=gesture_detected,
+                yunet_rows=yunet_rows,
+            )
+
+        detections = []
+        for index, box in enumerate(faces):
+            label = labels[index] if index < len(labels) else "UNREGISTERED"
+            detections.append({
+                "box": [int(v) for v in box],
+                "label": label,
+            })
+
+        return {
+            "success": True,
+            "faces_detected": len(faces),
+            "frame_width": int(frame.shape[1]),
+            "frame_height": int(frame.shape[0]),
+            "boxes": [[int(v) for v in box] for box in faces],
+            "labels": labels,
+            "detections": detections,
+            "gesture_detected": gesture_detected,
+            "recording": camera_stream.attendance_recording,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error processing device camera frame: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "faces_detected": 0,
+            "boxes": [],
+            "labels": [],
+            "detections": [],
+        }
 
 
 @router.post("/test-voice")

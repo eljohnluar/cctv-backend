@@ -88,15 +88,38 @@ class FaceDetector:
         min_size: int | None = None,
         detection_width: int | None = None,
     ) -> List[FaceBox]:
-        """
-        Detects bounding boxes (x, y, w, h) of faces in the frame.
+        """Detects bounding boxes (x, y, w, h) of faces in the frame.
 
         All tuning knobs are optional overrides; by default the configured
         runtime settings are used. Enrollment passes more permissive values so
         profile captures are not rejected outright.
         """
+        boxes, _ = self.detect_faces_with_landmarks(
+            frame, min_confidence, min_neighbors, min_size, detection_width
+        )
+        return boxes
+
+    def detect_faces_with_landmarks(
+        self,
+        frame: np.ndarray,
+        min_confidence: float | None = None,
+        min_neighbors: int | None = None,
+        min_size: int | None = None,
+        detection_width: int | None = None,
+    ) -> tuple[List[FaceBox], List]:
+        """Detects faces and returns (boxes, yunet_rows).
+
+        *yunet_rows* contains the raw YuNet detection row for each box
+        (bounding box + 5 landmark coords + confidence scaled back to the
+        original frame).  Callers that only need boxes should use
+        ``detect_faces``; callers that also need landmarks for SFace alignment
+        should use this method.
+
+        When YuNet is unavailable (Haar Cascade fallback) *yunet_rows* is an
+        empty list of the same length as *boxes* (all ``None``).
+        """
         if (self.yunet is None and not self.cascades) or frame is None or frame.size == 0:
-            return []
+            return [], []
 
         confidence = settings.FACE_DETECTION_CONFIDENCE if min_confidence is None else min_confidence
         neighbors = settings.FACE_DETECTION_MIN_NEIGHBORS if min_neighbors is None else min_neighbors
@@ -123,18 +146,30 @@ class FaceDetector:
                 _, faces = self.yunet.detect(detection_frame)
                 if faces is not None:
                     inverse_scale = 1.0 / scale
-                    yunet_boxes = [
-                        (
+                    yunet_boxes: List[FaceBox] = []
+                    yunet_rows: List = []
+                    for face in faces:
+                        if float(face[-1]) < confidence:
+                            continue
+                        # Scale the entire row (bbox + 10 landmark coords) back
+                        # to the original frame dimensions so alignCrop works on
+                        # the unresized frame.
+                        scaled_row = face.copy().astype(float)
+                        # Columns 0-3: x, y, w, h; columns 4-13: 5 landmarks (x,y each)
+                        scaled_row[:14] *= inverse_scale
+                        yunet_boxes.append((
                             round(float(face[0]) * inverse_scale),
                             round(float(face[1]) * inverse_scale),
                             round(float(face[2]) * inverse_scale),
                             round(float(face[3]) * inverse_scale),
-                        )
-                        for face in faces
-                        if float(face[-1]) >= confidence
-                    ]
+                        ))
+                        yunet_rows.append(scaled_row)
                     if yunet_boxes:
-                        return self._merge_overlaps(yunet_boxes)
+                        # Merge overlapping boxes, keeping corresponding rows in sync.
+                        selected_boxes, selected_rows = self._merge_overlaps_with_rows(
+                            yunet_boxes, yunet_rows
+                        )
+                        return selected_boxes, selected_rows
 
             gray = cv2.cvtColor(detection_frame, cv2.COLOR_BGR2GRAY)
             gray = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8)).apply(gray)
@@ -159,10 +194,30 @@ class FaceDetector:
                 )
                 for x, y, w, h in candidates
             ]
-            return self._merge_overlaps(original_boxes)
+            merged = self._merge_overlaps(original_boxes)
+            # No landmark data from Haar Cascades — return None rows.
+            return merged, [None] * len(merged)
         except Exception as e:
             logger.error(f"Error in face detection: {e}")
-            return []
+            return [], []
+
+    def _merge_overlaps_with_rows(
+        self, boxes: List[FaceBox], rows: List
+    ) -> tuple[List[FaceBox], List]:
+        """Like _merge_overlaps but keeps YuNet rows in sync with the kept boxes."""
+        selected_boxes: List[FaceBox] = []
+        selected_rows: List = []
+        paired = sorted(
+            zip(boxes, rows),
+            key=lambda pair: pair[0][2] * pair[0][3],
+            reverse=True,
+        )
+        for box, row in paired:
+            if all(self._intersection_over_union(box, kept) < 0.35 for kept in selected_boxes):
+                selected_boxes.append(box)
+                selected_rows.append(row)
+        return selected_boxes, selected_rows
+
 
     def draw_face_boxes(self, frame: np.ndarray, faces: List[FaceBox], labels: List[str] | None = None) -> np.ndarray:
         """Return a copy of a BGR frame with clear, dashboard-ready face boxes."""
@@ -180,26 +235,29 @@ class FaceDetector:
                 if right <= x or bottom <= y:
                     continue
 
-                label = labels[index] if labels and index < len(labels) else "UNKNOWN"
+                label = labels[index] if labels and index < len(labels) else "UNREGISTERED"
                 is_enrolled = (
                     bool(label)
                     and label.upper() not in ("UNKNOWN", "NOT ENROLLED", "TRESPASSER", "FACE", "UNREGISTERED")
                     and not label.upper().startswith("UNKNOWN")
                     and not label.upper().startswith("NOT ENROLLED")
                     and not label.upper().startswith("TRESPASSER")
+                    and not label.upper().startswith("UNREGISTERED")
                 )
 
                 if is_enrolled:
                     # Enrolled student: Emerald Green
                     box_color = (26, 218, 145)  # BGR
                     text_color = (6, 40, 24)     # Dark green text
+                    display_label = label
                 else:
                     # Unknown or not enrolled: Red (#ef4444 in BGR)
                     box_color = (68, 68, 239)    # BGR Red
                     text_color = (255, 255, 255) # White text
+                    display_label = "UNREGISTERED"
 
                 cv2.rectangle(annotated, (x, y), (right, bottom), box_color, 2, cv2.LINE_AA)
-                (label_width, label_height), baseline = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
+                (label_width, label_height), baseline = cv2.getTextSize(display_label, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
                 label_top = max(0, y - label_height - baseline - 8)
                 cv2.rectangle(
                     annotated,
@@ -210,7 +268,7 @@ class FaceDetector:
                 )
                 cv2.putText(
                     annotated,
-                    label,
+                    display_label,
                     (x + 6, y - baseline - 4),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.48,

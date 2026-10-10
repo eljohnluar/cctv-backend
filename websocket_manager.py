@@ -31,7 +31,12 @@ class ConnectionManager:
         if message.get("type") not in ("attendance", "attendance_time_out"):
             return True
         allowed = self.scopes.get(websocket)
-        return allowed is None or message.get("section") in allowed
+        if allowed is None or not allowed:
+            return True
+        sec = message.get("section")
+        if not sec:
+            return True
+        return sec in allowed or any(sec in a or a in sec for a in allowed)
 
     async def broadcast(self, message: dict):
         for connection in self.active_connections.copy():

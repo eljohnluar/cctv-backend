@@ -44,11 +44,43 @@ class FaceRecognizer:
         except Exception as error:
             logger.warning("Could not load OpenCV SFace face embedding model: %s", error)
 
-    def _extract_sface_embedding(self, face_image: np.ndarray) -> Optional[List[float]]:
+    def _extract_sface_embedding(
+        self,
+        face_image: np.ndarray,
+        full_frame: np.ndarray | None = None,
+        yunet_face_row: np.ndarray | None = None,
+    ) -> Optional[List[float]]:
+        """Extract a 128-d SFace embedding.
+
+        When *full_frame* and *yunet_face_row* (the raw YuNet detection row
+        containing bounding box + 5 landmark coordinates + confidence) are
+        provided, the model's own ``alignCrop`` is used.  This is the path
+        SFace was trained on and is significantly more accurate than a plain
+        resize.  The plain-resize fallback is kept for callers that only have
+        a cropped face patch (e.g. enrollment from an uploaded image).
+        """
         if self.sface is None or face_image is None or face_image.size == 0:
             return None
         try:
             import cv2
+            if full_frame is not None and yunet_face_row is not None:
+                try:
+                    aligned = self.sface.alignCrop(full_frame, yunet_face_row)
+                    with self._sface_lock:
+                        feature = self.sface.feature(aligned)
+                    vector = np.asarray(feature, dtype=np.float32).reshape(-1)
+                    norm = np.linalg.norm(vector)
+                    return (vector / norm).astype(float).tolist() if norm else None
+                except Exception as align_err:
+                    logger.debug("SFace alignCrop failed, falling back to resize: %s", align_err)
+
+            # Fallback: plain resize — used for enrollment uploads without
+            # YuNet landmark data.  Reject very small crops to avoid noisy
+            # embeddings that could produce false matches.
+            h, w = face_image.shape[:2]
+            if h < 40 or w < 40:
+                logger.debug("Face crop too small (%dx%d) for reliable embedding, skipping.", w, h)
+                return None
             aligned_face = cv2.resize(face_image, (112, 112), interpolation=cv2.INTER_AREA)
             with self._sface_lock:
                 feature = self.sface.feature(aligned_face)
@@ -59,7 +91,12 @@ class FaceRecognizer:
             logger.warning("OpenCV SFace embedding failed: %s", error)
             return None
 
-    def extract_embedding(self, face_image: np.ndarray) -> Optional[List[float]]:
+    def extract_embedding(
+        self,
+        face_image: np.ndarray,
+        full_frame: np.ndarray | None = None,
+        yunet_face_row: np.ndarray | None = None,
+    ) -> Optional[List[float]]:
         """
         Generates embedding vector for a cropped face image.
         """
@@ -76,7 +113,7 @@ class FaceRecognizer:
             except Exception as error:
                 logger.warning("DeepFace embedding failed; trying OpenCV SFace: %s", error)
 
-        return self._extract_sface_embedding(face_image)
+        return self._extract_sface_embedding(face_image, full_frame, yunet_face_row)
 
     def match_face(self, target_embedding: List[float], student_embeddings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """

@@ -120,6 +120,42 @@ def replace_face_embeddings(student_id: int, embeddings: List[List[float]]) -> L
         raise _database_error("face embedding save", error) from error
 
 
+def reset_student_face_enrollment(student_id: int) -> bool:
+    """Clear face embeddings and enrolled status for a specific student."""
+    try:
+        client = _client()
+        client.table("face_embeddings").delete().eq("student_id", student_id).execute()
+        client.table("students").update({
+            "has_face": False,
+            "face_storage_path": None,
+            "photo_url": None,
+            "gesture_enrolled": False,
+        }).eq("id", student_id).execute()
+        return True
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("student face reset", error) from error
+
+
+def reset_all_face_enrollments() -> int:
+    """Clear all face embeddings and reset all students' face enrollment status."""
+    try:
+        client = _client()
+        client.table("face_embeddings").delete().neq("id", 0).execute()
+        result = client.table("students").update({
+            "has_face": False,
+            "face_storage_path": None,
+            "photo_url": None,
+            "gesture_enrolled": False,
+        }).neq("id", 0).execute()
+        return len(result.data or [])
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("all face enrollments reset", error) from error
+
+
 def get_face_embeddings() -> List[Dict[str, Any]]:
     """Load enrolled vectors and their student identity data for live matching."""
     try:
@@ -443,3 +479,18 @@ def list_audit_events(
         raise
     except Exception as error:
         raise _database_error("audit log query", error) from error
+
+
+def clear_audit_log() -> int:
+    """Delete every stored audit event and return how many went.
+
+    PostgREST refuses an unfiltered delete, hence the ``id > 0`` match-all;
+    ``id`` is a BIGSERIAL so no row can satisfy ``id <= 0``.
+    """
+    try:
+        result = _client().table("audit_log").delete().gt("id", 0).execute()
+        return len(result.data or [])
+    except DatabaseUnavailableError:
+        raise
+    except Exception as error:
+        raise _database_error("audit log clear", error) from error

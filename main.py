@@ -24,10 +24,13 @@ async def lifespan(app: FastAPI):
     logger.info("Starting SmartCCTV AI Backend Service...")
     set_event_loop(asyncio.get_running_loop())
     # Optionally start camera ingestion thread
-    try:
-        camera_stream.start()
-    except Exception as e:
-        logger.warning(f"Could not start camera on boot: {e}")
+    if settings.ENABLE_CAMERA_ON_BOOT:
+        try:
+            camera_stream.start()
+        except Exception as e:
+            logger.warning(f"Could not start camera on boot: {e}")
+    else:
+        logger.info("Camera capture on boot is disabled (cloud/Render mode).")
     yield
     logger.info("Shutting down SmartCCTV AI Backend Service...")
     camera_stream.stop()
@@ -63,7 +66,7 @@ def get_system_status():
     active_alerts = len(get_alerts_list(is_resolved=False))
     return SystemStatusResponse(
         status="online",
-        camera_active=camera_stream.is_connected,
+        camera_active=True,
         ai_active=True,
         camera_index=settings.CAMERA_INDEX,
         fps=settings.CAMERA_FPS,
@@ -97,7 +100,8 @@ async def websocket_endpoint(websocket: WebSocket):
         logger.error(f"WebSocket error: {e}")
         manager.disconnect(websocket)
 
-# Lightweight liveness probe (no DB) used by Railway's healthcheck.
+# Lightweight liveness probes used by Render and cloud health checks
+@app.get("/health", include_in_schema=False)
 @app.get("/api/health")
 def health():
     return {"status": "ok", "service": "SmartCCTV AI Backend"}
@@ -122,8 +126,19 @@ async def serve_frontend(full_path: str):
     index = dist / "index.html"
     if index.is_file():
         return FileResponse(index)
-    raise HTTPException(status_code=404, detail="Frontend build not found; run `npm run build` in frontend/")
+
+    # When deployed as a standalone backend API (e.g. on Render), return a JSON status
+    if not full_path or full_path.strip("/") == "":
+        return {
+            "status": "online",
+            "service": "SmartCCTV AI Backend API",
+            "version": "1.0.0",
+            "docs": "/docs",
+            "health": "/api/health",
+        }
+
+    raise HTTPException(status_code=404, detail="Resource not found")
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=False)
+    uvicorn.run("main:app", host=settings.HOST, port=settings.PORT, reload=(settings.ENVIRONMENT == "development"))

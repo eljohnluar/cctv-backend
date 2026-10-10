@@ -13,6 +13,7 @@ from database.queries import (
     get_all_students,
     get_attendance_for_date,
     get_attendance_in_range,
+    clear_audit_log,
     list_audit_events,
     list_user_accounts,
     update_account_record,
@@ -338,3 +339,45 @@ def audit_log(
 
     actions = sorted({event.get("action") for event in events if event.get("action")})
     return {"events": events, "actions": actions, "count": len(events)}
+
+
+@router.delete("/audit-log")
+def reset_audit_log(
+    request: Request,
+    claims: AdminClaims,
+    _: dict = Depends(require_password_confirmation),
+):
+    """Erase the audit trail, gated on the administrator's own password.
+
+    The wipe is itself recorded afterwards, so a cleared log is never a silent
+    gap in the history.
+    """
+    if not _accounts_available():
+        raise HTTPException(
+            status_code=503,
+            detail="Audit history needs Supabase. Configure SUPABASE_URL and SUPABASE_SERVICE_KEY, then run the audit schema.",
+        )
+
+    try:
+        deleted = clear_audit_log()
+    except DatabaseUnavailableError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="The audit_log table is missing. Run backend/database/admin_schema.sql in the Supabase SQL Editor.",
+        ) from error
+
+    record_audit(
+        "audit_log_reset",
+        f"Administrator '{claims.get('sub')}' cleared {deleted} audit log event(s).",
+        actor=claims,
+        target="audit_log",
+        request=request,
+        severity="critical",
+    )
+    logger.warning("Audit log cleared by '%s' (%s events removed)", claims.get("sub"), deleted)
+
+    return {
+        "success": True,
+        "deleted_count": deleted,
+        "message": f"Audit log reset. {deleted} event(s) were deleted.",
+    }

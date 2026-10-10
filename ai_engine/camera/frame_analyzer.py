@@ -142,7 +142,7 @@ class FrameAnalyzer:
 
             if due_face:
                 last_detection_time = now
-                detected_faces = face_detector.detect_faces(frame)
+                detected_faces, yunet_rows = face_detector.detect_faces_with_landmarks(frame)
                 hand = self._state["hand"]
                 if detected_faces and (now - last_match_time >= MATCH_INTERVAL or len(detected_faces) != len(face_labels)):
                     face_labels = live_face_matcher.match_frame(
@@ -150,6 +150,7 @@ class FrameAnalyzer:
                         detected_faces,
                         camera_stream.attendance_recording,
                         hand["open_palm"],
+                        yunet_rows,
                     )
                     last_match_time = now
                 elif not detected_faces:
