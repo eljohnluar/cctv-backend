@@ -135,11 +135,11 @@ async def enroll_face(
                     detail=f"Show an open palm with your face before capturing the {angle} enrollment photo.",
                 )
 
-            faces = face_detector.detect_faces(frame)
+            faces, landmark_rows = face_detector.detect_faces_with_landmarks(frame)
             if not faces:
                 # Profile captures are harder for the detector than the front
                 # view. Retry with relaxed thresholds before giving up.
-                faces = face_detector.detect_faces(
+                faces, landmark_rows = face_detector.detect_faces_with_landmarks(
                     frame,
                     min_confidence=0.5,
                     min_neighbors=4,
@@ -155,7 +155,13 @@ async def enroll_face(
                     ),
                 )
 
-            x, y, width, height = max(faces, key=lambda box: box[2] * box[3])
+            largest_index = max(range(len(faces)), key=lambda i: faces[i][2] * faces[i][3])
+            x, y, width, height = faces[largest_index]
+            yunet_row = (
+                landmark_rows[largest_index]
+                if landmark_rows and largest_index < len(landmark_rows)
+                else None
+            )
             x = max(0, x)
             y = max(0, y)
             width = min(frame.shape[1] - x, width)
@@ -171,7 +177,13 @@ async def enroll_face(
             right = min(frame.shape[1], x + width + padding_x)
             bottom = min(frame.shape[0], y + height + padding_y)
             face_crop = frame[top:bottom, left:right]
-            embedding = face_recognizer.extract_embedding(face_crop)
+            # Match the live-feed pipeline exactly: landmark-aligned SFace
+            # embeddings (alignCrop). Resize-only enrollment vectors scored
+            # too low against aligned live vectors, so enrolled faces kept
+            # showing as UNREGISTERED.
+            embedding = face_recognizer.extract_embedding(
+                face_crop, full_frame=frame, yunet_face_row=yunet_row
+            )
             if not embedding:
                 raise HTTPException(
                     status_code=503,
