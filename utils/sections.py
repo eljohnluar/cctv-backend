@@ -4,6 +4,7 @@ A section name is year-scoped (``"1st Year - Section A"``) so the 5 sections tha
 exist in each of the 4 years stay distinguishable in reports and filters.
 """
 
+import re
 import time
 from typing import Dict, List, Optional
 
@@ -23,12 +24,25 @@ def normalise_years(values: Optional[List[str]]) -> List[str]:
     return [value for value in (values or []) if value in YEAR_LEVELS]
 
 
+def _letter_from_token(token: str) -> Optional[str]:
+    text = token.strip().upper()
+    if not text:
+        return None
+    for pattern in (r"^([A-E])\.?$", r"SECTION[\s\-]*([A-E])\b", r"\d[\s\-]*([A-E])$"):
+        match = re.search(pattern, text)
+        if match:
+            return match.group(1)
+    found = {char for char in text if char in SECTION_LETTERS}
+    return found.pop() if len(found) == 1 else None
+
+
 def normalise_letters(values: Optional[List[str]]) -> List[str]:
     cleaned = []
     for value in values or []:
-        letter = str(value).strip().upper()[:1]
-        if letter in SECTION_LETTERS and letter not in cleaned:
-            cleaned.append(letter)
+        for token in str(value).split(","):
+            letter = _letter_from_token(token)
+            if letter and letter not in cleaned:
+                cleaned.append(letter)
     return cleaned
 
 
