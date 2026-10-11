@@ -118,36 +118,49 @@ class FaceRecognizer:
     def match_face(self, target_embedding: List[float], student_embeddings: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
         """
         Calculates cosine similarity against database embeddings.
-        Returns closest match above confidence threshold.
+        Returns closest match above confidence threshold, and only when it
+        clearly beats every other candidate so ambiguous faces stay unknown.
         """
         if not target_embedding or not student_embeddings:
             return None
 
         target_vec = np.array(target_embedding)
-        best_match = None
-        best_score = -1.0
+        target_norm = np.linalg.norm(target_vec)
+        if target_norm == 0:
+            return None
+
+        best_per_student: Dict[Any, Dict[str, Any]] = {}
 
         for entry in student_embeddings:
             try:
                 emb = np.array(entry["embedding"], dtype=float)
                 if emb.shape != target_vec.shape:
                     continue
-                target_norm = np.linalg.norm(target_vec)
                 embedding_norm = np.linalg.norm(emb)
-                if target_norm == 0 or embedding_norm == 0:
+                if embedding_norm == 0:
                     continue
                 # Cosine similarity
-                cosine_sim = np.dot(target_vec, emb) / (target_norm * embedding_norm)
+                cosine_sim = float(np.dot(target_vec, emb) / (target_norm * embedding_norm))
             except (KeyError, TypeError, ValueError):
                 continue
-            if cosine_sim > best_score:
-                best_score = float(cosine_sim)
-                best_match = entry
+            student_key = entry.get("student_id")
+            current = best_per_student.get(student_key)
+            if current is None or cosine_sim > current["score"]:
+                best_per_student[student_key] = {"entry": entry, "score": cosine_sim}
 
-        if best_match and best_score >= self.threshold:
+        if not best_per_student:
+            return None
+
+        ranked = sorted(best_per_student.values(), key=lambda item: item["score"], reverse=True)
+        best = ranked[0]
+        runner_up_score = ranked[1]["score"] if len(ranked) > 1 else -1.0
+
+        # Require a clear lead over the second-best identity to avoid
+        # cross-person false matches on similar-looking faces.
+        if best["score"] >= self.threshold and best["score"] - runner_up_score >= 0.04:
             return {
-                "student_id": best_match["student_id"],
-                "confidence": best_score
+                "student_id": best["entry"]["student_id"],
+                "confidence": best["score"]
             }
 
         return None
