@@ -10,7 +10,8 @@ class StudentBase(BaseModel):
     photo_url: Optional[str] = Field(None, description="Avatar photo URL")
 
 class StudentCreate(StudentBase):
-    pass
+    teacher_id: Optional[int] = Field(None, description="ID of the teacher who manages this student")
+
 
 class StudentUpdate(BaseModel):
     student_id: Optional[str] = None
@@ -18,9 +19,11 @@ class StudentUpdate(BaseModel):
     section: Optional[str] = None
     grade_level: Optional[str] = None
     photo_url: Optional[str] = None
+    teacher_id: Optional[int] = None
 
 class StudentResponse(StudentBase):
     id: int
+    teacher_id: Optional[int] = None
     has_face: bool = False
     gesture_enrolled: bool = False
     face_storage_path: Optional[str] = None
@@ -28,3 +31,4 @@ class StudentResponse(StudentBase):
 
     class Config:
         from_attributes = True
+

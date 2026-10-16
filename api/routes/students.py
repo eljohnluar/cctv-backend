@@ -37,11 +37,16 @@ def _guard_section(section: Optional[str], claims: Optional[dict]) -> None:
 
 @router.get("", response_model=List[StudentResponse])
 def list_students(section: Optional[str] = None, claims: Optional[dict] = Depends(get_optional_account)):
-    """Retrieve enrolled students, limited to the sections the caller handles"""
+    """Retrieve enrolled students, limited to the sections or teacher_id the caller handles"""
     students = get_all_students(section=section)
     allowed = resolve_allowed_sections(claims)
     if allowed is not None:
-        students = [student for student in students if student.get("section") in allowed]
+        user_id = claims.get("uid") if claims else None
+        students = [
+            student for student in students
+            if (user_id is not None and student.get("teacher_id") == user_id)
+            or student.get("section") in allowed
+        ]
     return students
 
 @router.post("", response_model=StudentResponse)

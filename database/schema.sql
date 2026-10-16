@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS students (
 
 ALTER TABLE students ADD COLUMN IF NOT EXISTS face_storage_path TEXT;
 ALTER TABLE students ADD COLUMN IF NOT EXISTS gesture_enrolled BOOLEAN DEFAULT FALSE;
+ALTER TABLE students ADD COLUMN IF NOT EXISTS teacher_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
 
 -- Private bucket for cropped enrollment face images. The backend service key uploads to it.
 INSERT INTO storage.buckets (id, name, public)
