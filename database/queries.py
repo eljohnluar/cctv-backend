@@ -69,6 +69,12 @@ def create_student_record(data: Dict[str, Any]) -> Dict[str, Any]:
     except DatabaseUnavailableError:
         raise
     except Exception as error:
+        err_str = str(error).lower()
+        if "unique" in err_str or "duplicate" in err_str or "23505" in err_str:
+            raise DatabaseUnavailableError(
+                f"A student with that ID number already exists. "
+                f"Each student ID must be unique — check if '{data.get('student_id', '')}' is already enrolled."
+            ) from error
         raise _database_error("student insert", error) from error
 
 
